@@ -609,7 +609,7 @@ function ChatScreen({
       {/* Top bar */}
       <div
         style={{
-          padding: "12px 18px",
+          padding: "12px 5px",
           borderBottom: "1px solid var(--border)",
           background: "var(--bg2)",
           display: "flex",
@@ -619,9 +619,9 @@ function ChatScreen({
         }}
       >
         {/* Left — room code + status */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <div>
                 <div
                   style={{
