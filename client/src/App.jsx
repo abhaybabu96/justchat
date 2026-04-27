@@ -165,7 +165,7 @@ function CopyButton({ text }) {
         display: "flex",
         alignItems: "center",
         gap: 5,
-        padding: "6px 12px",
+        padding: "5px 5px",
         borderRadius: 7,
         cursor: "pointer",
         fontSize: 12,
@@ -656,7 +656,7 @@ function ChatScreen({
               background: connected ? "var(--green-bg)" : "var(--bg3)",
               border: `1px solid ${connected ? "var(--green-bdr)" : "var(--border)"}`,
               borderRadius: 20,
-              padding: "4px 10px",
+              padding: "5px 5px",
             }}
           >
             <div
@@ -691,7 +691,7 @@ function ChatScreen({
               title="Save this chat for 1 hour"
               style={{
                 fontSize: 11,
-                padding: "5px 12px",
+                padding: "5px 5px",
                 borderRadius: 6,
                 border: "1px solid var(--green-bdr)",
                 background: "var(--green-bg)",
@@ -717,7 +717,7 @@ function ChatScreen({
                 title="Click to clear saved chat"
                 style={{
                   fontSize: 11,
-                  padding: "5px 12px",
+                  padding: "5px 5px",
                   borderRadius: 6,
                   border: "1px solid var(--border)",
                   background: "var(--bg3)",
@@ -749,7 +749,7 @@ function ChatScreen({
             onClick={onLeave}
             style={{
               fontSize: 11,
-              padding: "5px 12px",
+              padding: "5px 8px",
               borderRadius: 6,
               border: "1px solid var(--border)",
               background: "transparent",
