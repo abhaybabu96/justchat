@@ -9,6 +9,24 @@ export function saveMessages(roomCode, messages) {
   }));
 }
 
+export function syncSavedMessages(roomCode, messages) {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data.roomCode !== roomCode) return;
+    localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        ...data,
+        messages,
+      }),
+    );
+  } catch {
+    // Ignore corrupted storage and let the app continue.
+  }
+}
+
 export function loadMessages(roomCode) {
   try {
     const raw = localStorage.getItem(KEY);

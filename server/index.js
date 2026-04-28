@@ -28,8 +28,22 @@ io.on('connection', (socket) => {
     io.to(code).emit('user-count', roomUsers[code]);
   });
 
-  socket.on('send-message', ({ code, text }) => {
-    socket.to(code).emit('receive-message', { text });
+  socket.on('send-message', ({ code, id, text, replyTo = null, authorId }) => {
+    socket.to(code).emit('receive-message', {
+      id,
+      text,
+      edited: false,
+      replyTo,
+      authorId
+    });
+  });
+
+  socket.on('edit-message', ({ code, id, text }) => {
+    socket.to(code).emit('message-edited', { id, text });
+  });
+
+  socket.on('delete-message', ({ code, id }) => {
+    socket.to(code).emit('message-deleted', { id });
   });
 
   socket.on('typing', (code) => {

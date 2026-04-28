@@ -7,8 +7,30 @@ import {
   clearMessages,
   isSaved,
   getTimeLeft,
+  syncSavedMessages,
 } from "./storage";
 import "./index.css";
+
+const updateMessageById = (messages, id, updater) =>
+  messages.map((message) =>
+    message.id === id ? { ...message, ...updater(message) } : message,
+  );
+
+const normalizeMessages = (messages) =>
+  messages.map((message) => ({
+    id: message.id || nanoid(),
+    edited: Boolean(message.edited),
+    replyTo: message.replyTo || null,
+    authorId: message.authorId || null,
+    ...message,
+  }));
+
+const getReplyLabel = (replyTo, myAuthorId) => {
+  if (!replyTo) return "";
+  if (replyTo.authorId && replyTo.authorId === myAuthorId) return "you";
+  if (replyTo.authorId) return "them";
+  return replyTo.sender === "me" ? "you" : "them";
+};
 
 // ── Root App ─────────────────────────────────────────────
 export default function App() {
@@ -22,24 +44,60 @@ export default function App() {
   const [isTyping, setIsTyping] = useState(false);
   const [saved, setSaved] = useState(() => isSaved());
   const [myCode] = useState(() => nanoid(7).toUpperCase());
+  const [myAuthorId] = useState(() => nanoid());
+  const [editingMessageId, setEditingMessageId] = useState(null);
+  const [editingText, setEditingText] = useState("");
+  const [replyTarget, setReplyTarget] = useState(null);
+  const [activeMessageId, setActiveMessageId] = useState(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState(null);
   const typingTimer = useRef(null);
+  const highlightTimer = useRef(null);
   const bottomRef = useRef(null);
+  const messageRefs = useRef({});
 
   // ── Socket listeners ──────────────────────────────────
   useEffect(() => {
-    socket.on("receive-message", ({ text }) =>
-      setMessages((p) => [...p, { text, sender: "them" }]),
-    );
+    const handleReceiveMessage = ({
+      id,
+      text,
+      edited = false,
+      replyTo = null,
+      authorId = null,
+    }) => {
+      setMessages((p) => [
+        ...p,
+        { id, text, sender: "them", edited, replyTo, authorId },
+      ]);
+    };
+    const handleMessageEdited = ({ id, text }) => {
+      setMessages((p) =>
+        updateMessageById(p, id, () => ({ text, edited: true })),
+      );
+    };
+    const handleMessageDeleted = ({ id }) => {
+      setMessages((p) => p.filter((message) => message.id !== id));
+    };
+
+    socket.on("receive-message", handleReceiveMessage);
+    socket.on("message-edited", handleMessageEdited);
+    socket.on("message-deleted", handleMessageDeleted);
     socket.on("user-count", setOnlineCount);
     socket.on("typing", () => setIsTyping(true));
     socket.on("stop-typing", () => setIsTyping(false));
     return () => {
-      socket.off("receive-message");
+      socket.off("receive-message", handleReceiveMessage);
+      socket.off("message-edited", handleMessageEdited);
+      socket.off("message-deleted", handleMessageDeleted);
       socket.off("user-count");
       socket.off("typing");
       socket.off("stop-typing");
     };
   }, []);
+
+  useEffect(() => {
+    if (!saved || !roomCode) return;
+    syncSavedMessages(roomCode, messages);
+  }, [messages, roomCode, saved]);
 
   // ── Auto scroll ────────────────────────────────────────
   useEffect(() => {
@@ -51,7 +109,7 @@ export default function App() {
     socket.connect();
     socket.emit("join-room", myCode);
     setRoomCode(myCode);
-    setMessages(loadMessages(myCode));
+    setMessages(normalizeMessages(loadMessages(myCode)));
     setSaved(isSaved());
     setScreen("chat");
   };
@@ -65,7 +123,7 @@ export default function App() {
     socket.connect();
     socket.emit("join-room", code);
     setRoomCode(code);
-    setMessages(loadMessages(code));
+    setMessages(normalizeMessages(loadMessages(code)));
     setSaved(isSaved());
     setScreen("chat");
   };
@@ -79,6 +137,11 @@ export default function App() {
     setOnlineCount(0);
     setIsTyping(false);
     setInput("");
+    setEditingMessageId(null);
+    setEditingText("");
+    setReplyTarget(null);
+    setActiveMessageId(null);
+    setHighlightedMessageId(null);
     setSaved(isSaved());
     setScreen("home");
   };
@@ -98,11 +161,86 @@ export default function App() {
   const sendMessage = () => {
     const text = input.trim();
     if (!text) return;
-    setMessages((p) => [...p, { text, sender: "me" }]);
-    socket.emit("send-message", { code: roomCode, text });
+    const id = nanoid();
+    const message = {
+      id,
+      text,
+      sender: "me",
+      edited: false,
+      replyTo: replyTarget,
+      authorId: myAuthorId,
+    };
+    setMessages((p) => [...p, message]);
+    socket.emit("send-message", {
+      code: roomCode,
+      id,
+      text,
+      replyTo: replyTarget,
+      authorId: myAuthorId,
+    });
     socket.emit("stop-typing", roomCode);
     clearTimeout(typingTimer.current);
     setInput("");
+    setReplyTarget(null);
+    setActiveMessageId(null);
+  };
+
+  const startEditingMessage = (message) => {
+    setEditingMessageId(message.id);
+    setEditingText(message.text);
+    setActiveMessageId(message.id);
+  };
+
+  const cancelEditingMessage = () => {
+    setEditingMessageId(null);
+    setEditingText("");
+    setActiveMessageId(null);
+  };
+
+  const saveEditedMessage = () => {
+    const text = editingText.trim();
+    if (!text || !editingMessageId) return;
+    setMessages((p) =>
+      updateMessageById(p, editingMessageId, () => ({ text, edited: true })),
+    );
+    socket.emit("edit-message", { code: roomCode, id: editingMessageId, text });
+    cancelEditingMessage();
+  };
+
+  const deleteMessage = (id) => {
+    setMessages((p) => p.filter((message) => message.id !== id));
+    socket.emit("delete-message", { code: roomCode, id });
+    if (editingMessageId === id) cancelEditingMessage();
+    if (replyTarget?.id === id) setReplyTarget(null);
+    if (activeMessageId === id) setActiveMessageId(null);
+  };
+
+  const replyToMessage = (message) => {
+    setReplyTarget({
+      id: message.id,
+      text: message.text,
+      sender: message.sender,
+      authorId: message.authorId,
+    });
+    setActiveMessageId(null);
+  };
+
+  const toggleMessageActions = (messageId) => {
+    setActiveMessageId((current) => (current === messageId ? null : messageId));
+  };
+
+  const jumpToMessage = (messageId) => {
+    if (!messageId) return;
+    const node = messageRefs.current[messageId];
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedMessageId(messageId);
+    window.clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => {
+      setHighlightedMessageId((current) =>
+        current === messageId ? null : current,
+      );
+    }, 1800);
   };
 
   const handleTyping = (e) => {
@@ -130,6 +268,22 @@ export default function App() {
         saved={saved}
         onSave={handleSave}
         onClearSave={handleClearSave}
+        editingMessageId={editingMessageId}
+        editingText={editingText}
+        onEditingTextChange={setEditingText}
+        onStartEditing={startEditingMessage}
+        onCancelEditing={cancelEditingMessage}
+        onSaveEditedMessage={saveEditedMessage}
+        onDeleteMessage={deleteMessage}
+        replyTarget={replyTarget}
+        onReplyToMessage={replyToMessage}
+        onCancelReply={() => setReplyTarget(null)}
+        activeMessageId={activeMessageId}
+        onToggleMessageActions={toggleMessageActions}
+        highlightedMessageId={highlightedMessageId}
+        messageRefs={messageRefs}
+        onJumpToMessage={jumpToMessage}
+        myAuthorId={myAuthorId}
       />
     );
 
@@ -573,6 +727,22 @@ function ChatScreen({
   saved,
   onSave,
   onClearSave,
+  editingMessageId,
+  editingText,
+  onEditingTextChange,
+  onStartEditing,
+  onCancelEditing,
+  onSaveEditedMessage,
+  onDeleteMessage,
+  replyTarget,
+  onReplyToMessage,
+  onCancelReply,
+  activeMessageId,
+  onToggleMessageActions,
+  highlightedMessageId,
+  messageRefs,
+  onJumpToMessage,
+  myAuthorId,
 }) {
   const connected = onlineCount >= 2;
   const [timeLeft, setTimeLeft] = useState(() => getTimeLeft());
@@ -806,13 +976,13 @@ function ChatScreen({
         <div style={{ textAlign: "center", marginBottom: 8 }}>
           <span
             style={{
-              fontSize: 11,
+              fontSize: 10,
               fontFamily: "var(--font-mono)",
               color: "var(--text3)",
               background: "var(--bg3)",
               border: "1px solid var(--border)",
               borderRadius: 20,
-              padding: "3px 10px",
+              padding: "8px 4px",
             }}
           >
             {connected
@@ -837,9 +1007,26 @@ function ChatScreen({
           </div>
         )}
 
-        {messages.map((msg, i) => (
+        {messages.map((msg) => (
           <div
-            key={i}
+            key={msg.id}
+            ref={(node) => {
+              if (node) {
+                messageRefs.current[msg.id] = node;
+              } else {
+                delete messageRefs.current[msg.id];
+              }
+            }}
+            className={
+              [
+                "message-row",
+                msg.sender === "me" ? "message-row--me" : "",
+                activeMessageId === msg.id ? "message-row--active" : "",
+                highlightedMessageId === msg.id ? "message-row--highlighted" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")
+            }
             style={{
               display: "flex",
               justifyContent: msg.sender === "me" ? "flex-end" : "flex-start",
@@ -849,22 +1036,176 @@ function ChatScreen({
             <div
               style={{
                 maxWidth: "72%",
-                padding: "10px 15px",
-                borderRadius: 16,
-                borderBottomRightRadius: msg.sender === "me" ? 3 : 16,
-                borderBottomLeftRadius: msg.sender === "them" ? 3 : 16,
-                background:
-                  msg.sender === "me" ? "var(--me-bg)" : "var(--them-bg)",
-                color:
-                  msg.sender === "me" ? "var(--me-text)" : "var(--them-text)",
-                fontSize: 14,
-                lineHeight: 1.55,
-                wordBreak: "break-word",
-                border:
-                  msg.sender === "them" ? "1px solid var(--border)" : "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                alignItems: msg.sender === "me" ? "flex-end" : "flex-start",
               }}
             >
-              {msg.text}
+              <div
+                onClick={() => onToggleMessageActions(msg.id)}
+                style={{
+                  padding: "10px 15px",
+                  borderRadius: 16,
+                  borderBottomRightRadius: msg.sender === "me" ? 3 : 16,
+                  borderBottomLeftRadius: msg.sender === "them" ? 3 : 16,
+                  background:
+                    msg.sender === "me" ? "var(--me-bg)" : "var(--them-bg)",
+                  color:
+                    msg.sender === "me"
+                      ? "var(--me-text)"
+                      : "var(--them-text)",
+                  fontSize: 14,
+                  lineHeight: 1.55,
+                  wordBreak: "break-word",
+                  border:
+                    msg.sender === "them" ? "1px solid var(--border)" : "none",
+                }}
+              >
+                {editingMessageId === msg.id ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                    }}
+                  >
+                    <textarea
+                      value={editingText}
+                      onChange={(e) => onEditingTextChange(e.target.value)}
+                      rows={3}
+                      style={{
+                        width: "100%",
+                        resize: "vertical",
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        border: "1px solid var(--border2)",
+                        background: "var(--bg2)",
+                        color: "var(--text)",
+                        fontSize: 14,
+                        lineHeight: 1.5,
+                        outline: "none",
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "flex-end",
+                        gap: 8,
+                      }}
+                    >
+                      <button
+                        onClick={onCancelEditing}
+                        style={messageActionButtonStyle}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={onSaveEditedMessage}
+                        style={{
+                          ...messageActionButtonStyle,
+                          background: "var(--green-bg)",
+                          border: "1px solid var(--green-bdr)",
+                          color: "var(--green)",
+                        }}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    {msg.replyTo && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onJumpToMessage(msg.replyTo.id);
+                        }}
+                        style={{
+                          marginBottom: 8,
+                          padding: "7px 10px",
+                          width: "100%",
+                          borderRadius: 10,
+                          background: "var(--bg3)",
+                          border: "1px solid var(--border)",
+                          textAlign: "left",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 10,
+                            fontFamily: "var(--font-mono)",
+                            color: "var(--text3)",
+                            marginBottom: 3,
+                          }}
+                        >
+                          Replying to {getReplyLabel(msg.replyTo, myAuthorId)}
+                        </div>
+                        <div
+                          style={{
+                          fontSize: 12,
+                          lineHeight: 1.4,
+                            color: "var(--text2)",
+                          }}
+                        >
+                          {msg.replyTo.text}
+                        </div>
+                      </button>
+                    )}
+                    {msg.text}
+                    {msg.edited && (
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 10,
+                          fontFamily: "var(--font-mono)",
+                          color:
+                            msg.sender === "me"
+                              ? "rgba(250, 249, 247, 0.72)"
+                              : "var(--text3)",
+                        }}
+                      >
+                        edited
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+
+              {editingMessageId !== msg.id && (
+                <div
+                  className="message-actions"
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                  }}
+                >
+                  <button
+                    onClick={() => onReplyToMessage(msg)}
+                    style={messageActionButtonStyle}
+                  >
+                    Reply
+                  </button>
+                  {msg.sender === "me" && (
+                    <>
+                      <button
+                        onClick={() => onStartEditing(msg)}
+                        style={messageActionButtonStyle}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => onDeleteMessage(msg.id)}
+                        style={messageActionButtonStyle}
+                      >
+                        Delete
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         ))}
@@ -916,55 +1257,116 @@ function ChatScreen({
           borderTop: "1px solid var(--border)",
           background: "var(--bg2)",
           display: "flex",
+          flexDirection: "column",
           gap: 10,
-          alignItems: "center",
           flexShrink: 0,
         }}
       >
-        <input
-          value={input}
-          onChange={onInputChange}
-          onKeyDown={(e) => e.key === "Enter" && onSend()}
-          placeholder={
-            connected ? "Message..." : "Waiting for the other person..."
-          }
-          disabled={!connected}
-          autoFocus
+        {replyTarget && (
+          <div
+            style={{
+              width: "100%",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 12px",
+              borderRadius: 12,
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontFamily: "var(--font-mono)",
+                  color: "var(--text3)",
+                  marginBottom: 3,
+                }}
+              >
+                Replying to {getReplyLabel(replyTarget, myAuthorId)}
+              </div>
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "var(--text2)",
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {replyTarget.text}
+              </div>
+            </div>
+            <button onClick={onCancelReply} style={messageActionButtonStyle}>
+              Cancel
+            </button>
+          </div>
+        )}
+        <div
           style={{
-            flex: 1,
-            background: "var(--bg)",
-            border: "1.5px solid var(--border2)",
-            borderRadius: 24,
-            padding: "11px 18px",
-            fontSize: 14,
-            color: "var(--text)",
-            outline: "none",
-            opacity: connected ? 1 : 0.5,
-            cursor: connected ? "text" : "not-allowed",
-          }}
-        />
-        <button
-          onClick={onSend}
-          disabled={!connected}
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: "50%",
-            border: "none",
-            background: "var(--text)",
-            color: "var(--bg2)",
-            fontSize: 16,
-            cursor: connected ? "pointer" : "not-allowed",
-            flexShrink: 0,
+            width: "100%",
             display: "flex",
+            gap: 10,
             alignItems: "center",
-            justifyContent: "center",
-            opacity: connected ? 1 : 0.4,
           }}
         >
-          ↑
-        </button>
+          <input
+            value={input}
+            onChange={onInputChange}
+            onKeyDown={(e) => e.key === "Enter" && onSend()}
+            placeholder={
+              connected ? "Message..." : "Waiting for the other person..."
+            }
+            disabled={!connected}
+            autoFocus
+            style={{
+              flex: 1,
+              background: "var(--bg)",
+              border: "1.5px solid var(--border2)",
+              borderRadius: 24,
+              padding: "11px 18px",
+              fontSize: 14,
+              color: "var(--text)",
+              outline: "none",
+              opacity: connected ? 1 : 0.5,
+              cursor: connected ? "text" : "not-allowed",
+            }}
+          />
+          <button
+            onClick={onSend}
+            disabled={!connected}
+            style={{
+              width: 40,
+              height: 40,
+              borderRadius: "50%",
+              border: "none",
+              background: "var(--text)",
+              color: "var(--bg2)",
+              fontSize: 16,
+              cursor: connected ? "pointer" : "not-allowed",
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              opacity: connected ? 1 : 0.4,
+            }}
+          >
+            ↑
+          </button>
+        </div>
       </div>
     </div>
   );
 }
+
+const messageActionButtonStyle = {
+  fontSize: 11,
+  padding: "4px 8px",
+  borderRadius: 999,
+  border: "1px solid var(--border)",
+  background: "var(--bg2)",
+  color: "var(--text2)",
+  cursor: "pointer",
+};

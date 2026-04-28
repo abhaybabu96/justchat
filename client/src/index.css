@@ -36,6 +36,27 @@ html, body, #root {
 button { font-family: var(--font-sans); cursor: pointer; }
 input  { font-family: var(--font-sans); }
 
+.message-row .message-actions {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-2px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.message-row:hover .message-actions,
+.message-row:focus-within .message-actions,
+.message-row--active .message-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.message-row--highlighted {
+  transition: transform 0.18s ease, filter 0.18s ease;
+  transform: scale(1.01);
+  filter: drop-shadow(0 0 0.75rem rgba(37, 99, 235, 0.18));
+}
+
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
