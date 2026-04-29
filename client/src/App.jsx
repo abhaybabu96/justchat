@@ -976,13 +976,13 @@ function ChatScreen({
         <div style={{ textAlign: "center", marginBottom: 8 }}>
           <span
             style={{
-              fontSize: 10,
+              fontSize: 9,
               fontFamily: "var(--font-mono)",
               color: "var(--text3)",
               background: "var(--bg3)",
               border: "1px solid var(--border)",
               borderRadius: 20,
-              padding: "8px 4px",
+              padding: "10px",
             }}
           >
             {connected
